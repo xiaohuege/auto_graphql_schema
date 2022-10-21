@@ -1,0 +1,2 @@
+# auto_graphql_schema
+根据mysql表结构自动生成graphql schema
