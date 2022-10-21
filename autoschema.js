@@ -25,7 +25,6 @@ function AutoSchema(database, username, password, options) {
 
   this.queryInterface = this.sequelize.getQueryInterface();
   this.tables = {};
-  this.foreignKeys = {};
 
   this.options = _.extend({
     autoSequelizeQuery: true,
@@ -37,7 +36,7 @@ function AutoSchema(database, username, password, options) {
       return tableName
     },
     // 表公共字段，根据需求调整
-    commonFields: ['created_time', 'modified_time','created_user','modified_user'],
+    commonFields: ['created_time', 'modified_time','created_user','modified_user','enabled'],
     // 描述数据所属人的字段
     selfKey: 'created_user'
   }, options || {});
@@ -55,6 +54,7 @@ AutoSchema.prototype.run = function(callback) {
     }, function(err) {
       var res = {}
       _.each(self.tables, function(fields, table) {
+        var isView = table.indexOf('v_') === 0
         var tableName = _.isFunction(self.options.formatTableName) ? self.options.formatTableName(table) : table
         if (tableName === false) return
         var typeName = tableName + 'Type'
@@ -62,6 +62,7 @@ AutoSchema.prototype.run = function(callback) {
         var indent = self.options.indentation
         var text  = '/*auto schema created at:' + new Date().toLocaleDateString() + '*/\n\n'
         text += 'const {GraphQLObjectType,GraphQLString,GraphQLID,GraphQLList,GraphQLNonNull,GraphQLInt,GraphQLFloat,GraphQLBoolean} = require("graphql")\n\n'
+        text += "function parseValue(param){let str = param;if(typeof str === 'undefined'){return false;}str += '';let op='=';let val='';let arr=str.split(':');if(arr.length==1){op='=';val=arr[0];}else if(arr[0]==''){op='=';val=(arr.splice(0,1),arr.join(':'));}else{op=arr[0];val=(arr.splice(0,1),arr.join(':'));}if(val === undefined) return false;return [op,val];}\n"
         text += 'const originalName = "' + table + '"\n\n'
         text += 'const name = "' + typeName + '"\n\n'
         text += 'const ' + typeName + ' = new GraphQLObjectType({\n'
@@ -111,7 +112,11 @@ AutoSchema.prototype.run = function(callback) {
         const resolverFindSelfAll = _.camelCase(`get_self_${tableName}_List`)
         const resolverAddOne = _.camelCase(`add_${tableName}_`)
         const resolverDeleteOne = _.camelCase(`delete_${tableName}_ById`)
+        const resolverDeleteSelfOne = _.camelCase(`delete_self_${tableName}_ById`)
         const resolverModifyOne = _.camelCase(`modify_${tableName}_ById`)
+        const resolverModifySelfOne = _.camelCase(`modify_self_${tableName}_ById`)
+        const resolverSearch = _.camelCase(`search_${tableName}`)
+        const resolverSearchSelf = _.camelCase(`search_self_${tableName}`)
         if (primaryIds.length) {
           if (self.options.autoSequelizeQuery) {
             //findOne
@@ -159,12 +164,12 @@ AutoSchema.prototype.run = function(callback) {
             _.each(fieldTypeMap, function(fType, field) {
               if (field === self.options.selfKey) {
                 sql += ' and ' + field + '= :' + field
-                paramMap += field + ':cxt.__openid,'
+                paramMap += field + ':ctx.session.loginname,'
               }
             })
             paramMap += '}'
             text += indent + '},\n'
-            text += indent + 'async resolve(obj, params, { sequelize }) {\n'
+            text += indent + 'async resolve(obj, params, { sequelize, ctx }) {\n'
             text += indent + indent + 'if (!sequelize) return null\n'
             text += indent + indent + 'let list = await sequelize.query("' + sql + '", { type: sequelize.QueryTypes.SELECT, replacements: ' + paramMap + ' })\n'
             text += indent + indent + 'return list[0]\n'
@@ -175,7 +180,7 @@ AutoSchema.prototype.run = function(callback) {
             text += indent + 'type: new GraphQLList(' + typeName + '),\n'
             text += indent + 'description: "findAll",\n'
             text += indent + 'args: {},\n'
-            var sql = 'select * from ' + table
+            var sql = 'select * from ' + table + ' where enabled=1'
             text += indent + 'async resolve(obj, params, { sequelize }) {\n'
             text += indent + indent + 'if (!sequelize) return null\n'
             text += indent + indent + 'return await sequelize.query("' + sql + '", { type: sequelize.QueryTypes.SELECT })\n'
@@ -186,14 +191,14 @@ AutoSchema.prototype.run = function(callback) {
             text += indent + 'type: new GraphQLList(' + typeName + '),\n'
             text += indent + 'description: "findAll self",\n'
             text += indent + 'args: {selfKey:{type:GraphQLString,description:"描述所有人的字段，默认是' + self.options.selfKey + '"}},\n'
-            var sql = 'select * from ' + table + ' where ' + self.options.selfKey + '=:' + self.options.selfKey
+            var sql = 'select * from ' + table + ' where enabled=1 and ' + self.options.selfKey + '=:' + self.options.selfKey
             text += indent + 'async resolve(obj, params, { sequelize, ctx }) {\n'
             text += indent + indent + 'if (!sequelize) return null\n'
             text += indent + indent + 'var sqlStr = "' + sql + '"\n'
             text += indent + indent + 'if (params.selfKey && typeof params.selfKey === "string"){\n'
             text += indent + indent + indent + 'sqlStr = sqlStr.replace("' + self.options.selfKey + '",params.selfKey)\n'
             text += indent + indent + '}\n'
-            text += indent + indent + 'return await sequelize.query(sqlStr, { type: sequelize.QueryTypes.SELECT, replacements: { ' + self.options.selfKey + ': ctx.__openid || ""} })\n'
+            text += indent + indent + 'return await sequelize.query(sqlStr, { type: sequelize.QueryTypes.SELECT, replacements: { ' + self.options.selfKey + ': ctx.session.loginname} })\n'
             text += indent + '}\n'
             text += '}\n\n'
             //addOne
@@ -216,11 +221,7 @@ AutoSchema.prototype.run = function(callback) {
                 }
 
                 inputParam.push(field)
-                if (field == self.options.selfKey) {
-                  paramMap += field + ': ctx.__openid'  + ','
-                } else {
-                  paramMap += field + ': params.' + field + ','
-                }
+                paramMap += field + ': params.' + field + ','
               }
             })
             var valueHolder = _.map(inputParam, function(field){
@@ -232,9 +233,15 @@ AutoSchema.prototype.run = function(callback) {
 
               var commonValue = null
               if (field === 'created_time') {
-                commonValue = "new Date()"
+                commonValue = 'new Date()'
+              }else if (field === 'created_user') {
+                commonValue = 'ctx.session.loginname'
               }else if (field === 'modified_time') {
                 commonValue = null
+              }else if (field === 'modified_user') {
+                commonValue = null
+              }else if(field === 'enabled'){
+                commonValue = 1
               }
               paramMap += field + `:${commonValue},`
             })
@@ -252,7 +259,6 @@ AutoSchema.prototype.run = function(callback) {
             text += indent + 'type: GraphQLBoolean,\n'
             text += indent + 'description: "modifyOne",\n'
             text += indent + 'args: {\n'
-            var inputParam = []
             sql = 'update ' + table + ' set '
             var where = ' where 1=1 '
             var updateParams = []
@@ -281,15 +287,81 @@ AutoSchema.prototype.run = function(callback) {
                 inputParams.push(field)
                 paramMap += field + ': params.' + field + ','
               }
-              if (field === self.options.selfKey) {
+            })
+            _.each(self.options.commonFields, function(field) {
+              if (field === 'modified_time') {
+                updateParams.push(field)
+                paramMap += field + `:new Date(),`
+              } else if (field === 'modified_user') {
+                updateParams.push(field)
+                paramMap += field + ': ctx.session.loginname,'
+              }
+            })
+            sql += _.map(updateParams, function(field){
+              return `${field}=:${field}`
+            }).join(',')
+            sql += where
+            paramMap += '}'
+            text += indent + '},\n'
+            text += indent + 'async resolve(obj, params, { sequelize, ctx }) {\n'
+            text += indent + indent + 'if (!sequelize) return false\n'
+            text += indent + indent + 'var inputParams = ' + JSON.stringify(inputParams) + '\n'
+            text += indent + indent + 'var sqlStr = "' + sql + '"\n'
+            text += indent + indent + 'inputParams.map(function(field){' + '\n'
+            text += indent + indent + indent + 'if (typeof params[field] === "undefined"){' + '\n'
+            text += indent + indent + indent + indent + 'sqlStr = sqlStr.replace(field + "=:" + field + ",","")' + '\n'
+            text += indent + indent + indent + '}' + '\n'
+            text += indent + indent + '})\n'
+            text += indent + indent + 'var res = await sequelize.query(sqlStr, { type: sequelize.QueryTypes.UPDATE, replacements: ' + paramMap + '})\n'
+            text += indent + indent + 'return (res && res.length && res[1] > 0)\n'
+            text += indent + '}\n'
+            text += '}\n\n'
+            //mofifyOne self
+            text += 'const ' + resolverModifySelfOne + ' = {\n'
+            text += indent + 'type: GraphQLBoolean,\n'
+            text += indent + 'description: "modifyOne self",\n'
+            text += indent + 'args: {\n'
+            sql = 'update ' + table + ' set '
+            where = ' where 1=1 '
+            updateParams = []
+            inputParams = []
+            paramMap = '{'
+            _.each(primaryIds, function(id){
+              text += indent + indent + id.key + ':{\n'
+              text += indent + indent + indent + 'name :"' + id.key + '",\n'
+              text += indent + indent + indent + 'type : new GraphQLNonNull(GraphQLID),\n'
+              text += indent + indent + indent + 'description: "' + id.value + '"\n'
+              text += indent + indent + '},\n'
+
+              where += ' and ' + id.key + '= :' + id.key
+              paramMap += id.key + ': params.' + id.key + ','
+            })
+            _.each(fieldTypeMap, function(fType, field) {
+              //not primary field && not common field
+              if (!fieldPrimaryMap[field] && self.options.commonFields.indexOf(field) < 0 && field != self.options.selfKey) {
+                text += indent + indent + field + ':{\n'
+                text += indent + indent + indent + 'name :"' + field + '",\n'
+                text += indent + indent + indent + 'type : ' + fieldTypeMap[field] + ',\n'
+                text += indent + indent + indent + 'description: "' + fieldDescriptionMap[field] + '"\n'
+                text += indent + indent + '},\n'
+
+                updateParams.push(field)
+                inputParams.push(field)
+                paramMap += field + ': params.' + field + ','
+              }
+
+              if (field == self.options.selfKey) {
                 where += ' and ' + field + '= :' + field
-                paramMap += field + ': ctx.__openid,'
+                paramMap += field + ': ctx.session.loginname' + ','
               }
             })
             _.each(self.options.commonFields, function(field) {
               if (field === 'modified_time') {
                 updateParams.push(field)
                 paramMap += field + `:new Date(),`
+              } else if (field === 'modified_user') {
+                updateParams.push(field)
+                paramMap += field + ': ctx.session.loginname,'
               }
             })
             sql += _.map(updateParams, function(field){
@@ -316,7 +388,31 @@ AutoSchema.prototype.run = function(callback) {
             text += indent + 'type: GraphQLBoolean,\n'
             text += indent + 'description: "deleteOne",\n'
             text += indent + 'args: {\n'
-            var inputParam = []
+            sql = 'delete from ' + table + ' where 1=1 '
+            paramMap = '{'
+            _.each(primaryIds, function(id){
+              text += indent + indent + id.key + ':{\n'
+              text += indent + indent + indent + 'name :"' + id.key + '",\n'
+              text += indent + indent + indent + 'type : new GraphQLNonNull(GraphQLID),\n'
+              text += indent + indent + indent + 'description: "' + id.value + '"\n'
+              text += indent + indent + '},\n'
+
+              sql += ' and ' + id.key + '= :' + id.key
+              paramMap += id.key + ': params.' + id.key + ','
+            })
+            paramMap += '}'
+            text += indent + '},\n'
+            text += indent + 'async resolve(obj, params, { sequelize, ctx }) {\n'
+            text += indent + indent + 'if (!sequelize) return false\n'
+            text += indent + indent + 'var res = await sequelize.query("' + sql + '", { type: sequelize.QueryTypes.UPDATE, replacements: ' + paramMap + '})\n'
+            text += indent + indent + 'return (res && res.length && res[1] > 0)\n'
+            text += indent + '}\n'
+            text += '}\n\n'
+            //deleteOne self
+            text += 'const ' + resolverDeleteSelfOne + ' = {\n'
+            text += indent + 'type: GraphQLBoolean,\n'
+            text += indent + 'description: "deleteOne self",\n'
+            text += indent + 'args: {\n'
             sql = 'delete from ' + table + ' where 1=1 '
             paramMap = '{'
             _.each(primaryIds, function(id){
@@ -332,7 +428,7 @@ AutoSchema.prototype.run = function(callback) {
             _.each(fieldTypeMap, function(fType, field) {
               if (field === self.options.selfKey) {
                 sql += ' and ' + field + '= :' + field
-                paramMap += field + ': ctx.__openid,'
+                paramMap += field + ': ctx.session.loginname,'
               }
             })
             paramMap += '}'
@@ -343,6 +439,78 @@ AutoSchema.prototype.run = function(callback) {
             text += indent + indent + 'return (res && res.length && res[1] > 0)\n'
             text += indent + '}\n'
             text += '}\n\n'
+            //search
+            text += 'const ' + resolverSearch + ' = {\n'
+            text += indent + 'type: new GraphQLList(' + typeName + '),\n'
+            text += indent + 'description: "search",\n'
+            text += indent + 'args: {\n'
+            sql = 'select * from ' + table + ' where 1=1 and enabled=1'
+            inputParams = []
+            _.each(fieldTypeMap, function(fType, field) {
+              text += indent + indent + field + ':{\n'
+              text += indent + indent + indent + 'name :"' + field + '",\n'
+              text += indent + indent + indent + 'type : GraphQLString,\n'
+              text += indent + indent + indent + 'description: "' + fieldDescriptionMap[field] + '"\n'
+              text += indent + indent + '},\n'
+
+              inputParams.push(field)
+            })
+            text += indent + '},\n'
+            text += indent + 'async resolve(obj, params, { sequelize, ctx }) {\n'
+            text += indent + indent + 'if (!sequelize) return false\n'
+            text += indent + indent + 'var inputParams = ' + JSON.stringify(inputParams) + '\n'
+            text += indent + indent + 'var sqlStr = "' + sql + '"\n'
+            text += indent + indent + 'var paramMap = {}\n'
+            text += indent + indent + 'inputParams.map(function(field){' + '\n'
+            text += indent + indent + indent + 'var arr = parseValue(params[field])' + '\n'
+            text += indent + indent + indent + 'if (arr !== false){' + '\n'
+            text += indent + indent + indent + indent + 'paramMap[field]= arr[1]' + '\n'
+            text += indent + indent + indent + indent + 'sqlStr += " and " + field + " " + arr[0] + " :" + field' + '\n'
+            text += indent + indent + indent + '}' + '\n'
+            text += indent + indent + '})\n'
+            text += indent + indent + 'var res = await sequelize.query(sqlStr, { type: sequelize.QueryTypes.SELECT, replacements: paramMap})\n'
+            text += indent + indent + 'return res\n'
+            text += indent + '}\n'
+            text += '}\n\n'
+            //search self
+            text += 'const ' + resolverSearchSelf + ' = {\n'
+            text += indent + 'type: new GraphQLList(' + typeName + '),\n'
+            text += indent + 'description: "search",\n'
+            text += indent + 'args: {\n'
+            sql = 'select * from ' + table + ' where 1=1 and enabled=1 and '
+            inputParams = []
+            _.each(fieldTypeMap, function(fType, field) {
+              if (field != self.options.selfKey){
+                text += indent + indent + field + ':{\n'
+                text += indent + indent + indent + 'name :"' + field + '",\n'
+                text += indent + indent + indent + 'type : GraphQLString,\n'
+                text += indent + indent + indent + 'description: "' + fieldDescriptionMap[field] + '"\n'
+                text += indent + indent + '},\n'
+
+                inputParams.push(field)
+              } else {
+                sql += ' ' + field + "= :" + field
+              }
+            })
+            text += indent + '},\n'
+            text += indent + 'async resolve(obj, params, { sequelize, ctx }) {\n'
+            text += indent + indent + 'if (!sequelize) return false\n'
+            text += indent + indent + 'var inputParams = ' + JSON.stringify(inputParams) + '\n'
+            text += indent + indent + 'var sqlStr = "' + sql + '"\n'
+            text += indent + indent + 'var paramMap = {}\n'
+            text += indent + indent + 'paramMap["' + self.options.selfKey + '"] = ctx.session.loginname\n'
+            text += indent + indent + 'inputParams.map(function(field){' + '\n'
+            text += indent + indent + indent + 'var arr = parseValue(params[field])' + '\n'
+            text += indent + indent + indent + 'if (arr !== false){' + '\n'
+            text += indent + indent + indent + indent + 'paramMap[field]= arr[1]' + '\n'
+            text += indent + indent + indent + indent + 'sqlStr += " and " + field + " " + arr[0] + " :" + field' + '\n'
+            text += indent + indent + indent + '}' + '\n'
+            text += indent + indent + '})\n'
+            text += indent + indent + 'console.log(paramMap)\n'
+            text += indent + indent + 'var res = await sequelize.query(sqlStr, { type: sequelize.QueryTypes.SELECT, replacements: paramMap})\n'
+            text += indent + indent + 'return res\n'
+            text += indent + '}\n'
+            text += '}\n\n'
           }
         }
         text += 'module.exports = {\n'
@@ -350,8 +518,13 @@ AutoSchema.prototype.run = function(callback) {
         text += indent + 'name: name,\n'
         text += indent + 'type:' + typeName + ',\n'
         if (primaryIds.length && self.options.autoSequelizeQuery) {
-          text += indent + 'query: {' + resolverFindOne + ',' + resolverFindSelfOne + ',' + resolverFindAll + ',' + resolverFindSelfAll + '},\n'
-          text += indent + 'mutation: {' + resolverAddOne + ',' + resolverModifyOne + ',' + resolverDeleteOne + '},\n'
+          if (!isView) {
+            text += indent + 'query: {' + resolverFindOne + ',' + resolverFindSelfOne + ',' + resolverFindAll + ',' + resolverFindSelfAll + ',' + resolverSearch + ',' + resolverSearchSelf + '},\n'
+            text += indent + 'mutation: {' + resolverAddOne + ',' + resolverModifyOne + ',' + resolverModifySelfOne + ',' + resolverDeleteOne + ',' + resolverDeleteSelfOne + '},\n'
+          } else {
+            text += indent + 'query: {' + resolverSearch + ',' + resolverSearchSelf + '},\n'
+            text += indent + 'mutation: {},\n'
+          }
         }
         text += '}\n'
         res[table] = text;
@@ -400,7 +573,7 @@ function main() {
     outpath: outpath,
     formatTableName: function(tableName) {
       let res = tableName
-      if (res.indexOf('t_') === 0) {
+      if (res.indexOf('t_') === 0 || res.indexOf('v_') === 0) {
         res = res.slice(2)
       }
       return _.camelCase(res)

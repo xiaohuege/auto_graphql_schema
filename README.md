@@ -12,7 +12,8 @@ sequelize ORM工具，用于操作mysql
 - 1、show tables 获取所有表名
 - 2、desc xxxx 获取表结构
 - 3、根据表结构和字段类型，生成对应的Graphql Type
-- 4、生成增删改查对应的resolver，包括get_xxx_ById(根据id查询)、get_self_xxx_ById(根据id和数据所属人查询)、get_xxx_List(查询所有数据)、get_self_xxx_List(根据数据所属人查询所有数据)、add_xxx(新增数据)、delete_xxx_ById(根据id删除数据)、modify_xxx_ById(根据id修改数据)
+- 4、生成增删改查对应的resolver，包括get_xxx_ById(根据id查询)、get_self_xxx_ById(根据id和数据所属人查询)、get_xxx_List(查询所有数据)、get_self_xxx_List(根据数据所属人查询所有数据)、add_xxx(新增数据)、delete_xxx_ById(根据id删除数据)、delete_self_xxx_ById(根据id和数据所属人删除数据)、modify_xxx_ById(根据id修改数据)、modify_self_xxx_ById(根据id和数据所属人修改数据)、search_xxx(搜索数据)、search_self_xxx(根据数据所属人搜索数据)
+备注：xxx是指表名
 - 5、生成js文件
 
 # 其他
