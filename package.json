@@ -1,0 +1,27 @@
+{
+  "name": "auto_graphql_schema",
+  "version": "1.0.0",
+  "description": "根据mysql表结构自动生成graphql schema",
+  "main": "autoschema.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaohuege/auto_graphql_schema.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/xiaohuege/auto_graphql_schema/issues"
+  },
+  "homepage": "https://github.com/xiaohuege/auto_graphql_schema#readme",
+  "dependencies": {
+    "async": "^3.2.4",
+    "graceful-fs-extra": "^2.0.0",
+    "loadsh": "^0.0.4",
+    "mkdirp": "^1.0.4",
+    "sequelize": "^7.0.0-alpha2.1"
+  }
+}
